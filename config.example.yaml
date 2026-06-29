@@ -1,0 +1,65 @@
+# Copy to config.yaml and adjust. Durations are Go-style strings ("60s", "1s").
+server:
+  addr: ":8080"
+
+redis:
+  addr: "localhost:6379"
+  timeout_ms: 50          # tight per-op deadline; a slow shard => degradation path
+
+upstream:
+  base_url: "https://api.openai.com"   # the LLM provider we proxy to
+  default_max_tokens: 512              # completion bound when request omits max_tokens
+
+# tokens -> dollars, per 1K tokens. Missing models fall back to `default`.
+pricing:
+  default:
+    input_per_1k: 0.5
+    output_per_1k: 1.5
+  models:
+    gpt-4o:
+      input_per_1k: 2.5
+      output_per_1k: 10.0
+    claude-sonnet-4-6:
+      input_per_1k: 3.0
+      output_per_1k: 15.0
+
+# Layered rules — ALL matching rules are checked; the most restrictive wins.
+rules:
+  # Per-API-key TOKEN budget (the niche): token bucket so bursts up to `burst`
+  # are allowed while the sustained rate stays at limit/window.
+  - id: key-tokens-per-min
+    scope: api_key
+    algorithm: token_bucket
+    unit: tokens
+    limit: 100000        # 100k tokens / minute sustained
+    burst: 120000        # allow a 120k-token burst
+    window: 60s
+    fail_open: false     # cost gateway => fail-closed (ADR-008)
+
+  # Per-API-key DOLLAR ceiling per day.
+  - id: key-dollars-per-day
+    scope: api_key
+    algorithm: token_bucket
+    unit: dollars
+    limit: 50            # $50 / day
+    window: 24h
+    fail_open: false
+
+  # Global request-rate safety net, smoothed (sliding window). Fronts a shared
+  # resource, so it may favor availability.
+  - id: global-req-per-sec
+    scope: global
+    algorithm: sliding_window
+    unit: requests
+    limit: 5000
+    window: 1s
+    fail_open: true
+
+  # Generous per-IP cap for anonymous traffic (corporate NAT / shared WiFi).
+  - id: ip-req-per-min
+    scope: ip
+    algorithm: sliding_window
+    unit: requests
+    limit: 600
+    window: 60s
+    fail_open: true

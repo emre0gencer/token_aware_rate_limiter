@@ -1,0 +1,20 @@
+# binaries
+/bin/
+gateway
+
+# local config (copy from config.example.yaml)
+config.yaml
+
+# go
+*.test
+*.out
+coverage.*
+
+# editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# local docs (not committed)
+ARCHITECTURE.md
+decisions.md
