@@ -1,6 +1,6 @@
 # binaries
 /bin/
-gateway
+/gateway
 
 # local config (copy from config.example.yaml)
 config.yaml
