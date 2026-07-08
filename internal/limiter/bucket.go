@@ -31,6 +31,10 @@ func NewBucket(capacity, refillPerSec float64, now time.Time) *Bucket {
 // — you advance the clock by exact amounts instead of sleeping.
 func (b *Bucket) Allow(now time.Time, cost float64) (allowed bool, remaining float64) {
 	elapsed := now.Sub(b.last).Seconds()
+	//guard
+	if elapsed < 0 {
+		elapsed = 0
+	}
 	b.tokens = min(b.capacity, b.tokens+elapsed*b.refill)
 	b.last = now
 	if b.tokens >= cost {
