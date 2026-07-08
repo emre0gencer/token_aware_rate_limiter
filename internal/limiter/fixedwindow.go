@@ -2,6 +2,7 @@ package limiter
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -27,57 +28,88 @@ type FixedWindow struct {
 func NewFixedWindow(rdb redis.Cmdable, limit float64, window time.Duration) *FixedWindow {
 	// TODO: also set ttl a bit longer than one window (e.g. 2*window) so a
 	// just-written counter survives until its window is definitely over.
-	return &FixedWindow{rdb: rdb, limit: limit, window: window}
+	return &FixedWindow{rdb: rdb, limit: limit, window: window, ttl: window * 2}
 }
 
 // Allow increments this client's counter for the CURRENT window and admits the
 // request iff the new total stays within limit.
 func (f *FixedWindow) Allow(ctx context.Context, key string, cost float64) (Decision, error) {
 	now := time.Now()
-	_ = now
+	icost := int64(cost)
 
 	// HINT 1 — window-in-the-key. Turn `now` into an integer window index using
 	// the window length, and append it to `key`. Because each window gets its
 	// own key, the previous window's counter just TTLs away — no manual reset,
 	// and you sidestep the "only EXPIRE on the first increment" bug (see bottom).
-	//     idx  := now.UnixMilli() / f.window.Milliseconds()
-	//     wkey := fmt.Sprintf("%s:%d", key, idx)
+	idx := now.UnixMilli() / f.window.Milliseconds()
+	wkey := fmt.Sprintf("%s:%d", key, idx)
+
+	// HINT 6 — latency. INCRBY then PEXPIRE is two round-trips; a pipeline sends
+	// both in one, matching §5.3's "one round-trip per check." Consequence: the
+	// queued commands' values aren't populated until Exec runs, so the decision
+	// (HINT 4) has to come AFTER Exec (HINT 5) — hence the ordering below.
+	pipe := f.rdb.Pipeline()
 
 	// HINT 2 — the atomic increment. IncrBy returns the NEW total after adding.
 	// That one value is both your read and your write — no GET first, no race.
-	//     total, err := f.rdb.IncrBy(ctx, wkey, int64(cost)).Result()
 	// IncrBy is integer; cost is float64 only for interface uniformity. Whole
 	// costs only here. (Fractional token/dollar rules use the token bucket, or
 	// you'd reach for IncrByFloat / INCRBYFLOAT.)
+	incrCmd := pipe.IncrBy(ctx, wkey, icost)
 
 	// HINT 3 — arm the TTL so the window auto-expires. With window-in-key it is
 	// safe to (re)set on every call; the key is unique to this window.
-	//     f.rdb.PExpire(ctx, wkey, f.ttl)
+	pipe.PExpire(ctx, wkey, f.ttl)
 
-	// HINT 4 — decide and fill the Decision:
+	// HINT 5 — errors. Run the batch; if a Redis call errors, return
+	// (Decision{}, err) and let the gateway apply the fail-open/closed policy
+	// (ADR-008); don't decide here. Command values are only valid after Exec.
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		return Decision{}, err
+	}
+
+	// HINT 4 — decide and fill the Decision, now that the increment reply is in:
 	//     Allowed   = total <= limit
 	//     Limit     = f.limit
 	//     Remaining = max(0, f.limit - float64(total))
-	//     ResetAt   = start of the NEXT window (now truncated to window + window)
+	//     ResetAt   = start of the NEXT window
 	// Design question: on a DENY you've still incremented. Do you DECRBY it back
 	// so denials don't consume budget? For a pure counter that's the difference
-	// between limiting "attempts" and "admissions" — decide deliberately.
+	// between limiting "attempts" and "admissions" — here we keep it counted.
+	total := incrCmd.Val()
+	allowed := float64(total) <= f.limit
+	remaining := f.limit - float64(total)
+	if remaining < 0 {
+		remaining = 0
+	}
+	resetAt := time.Unix(0, (idx+1)*f.window.Nanoseconds()) // start of next window
 
-	// HINT 5 — errors. If a Redis call errors, return (Decision{}, err) and let
-	// the gateway apply the fail-open/closed policy (ADR-008); don't decide here.
-
-	// HINT 6 — latency (optional). INCRBY then PEXPIRE is two round-trips. A
-	// pipeline (f.rdb.Pipeline()) sends both in one, matching §5.3's "one
-	// round-trip per check." Correctness doesn't need it; latency likes it.
-
-	return Decision{}, nil // TODO
+	return Decision{
+		Allowed:   allowed,
+		Limit:     f.limit,
+		Remaining: remaining,
+		ResetAt:   resetAt,
+	}, nil
 }
 
 // Reconcile nudges the current window's counter by delta (actual - estimate).
 func (f *FixedWindow) Reconcile(ctx context.Context, key string, delta float64) error {
 	// TODO: derive the same window key, then a single IncrBy of delta. Return
 	// nil for delta == 0. Best-effort — the counter heals on window rollover.
+	if delta == 0 {
+		return nil
+	}
+	now := time.Now()
+	idx := now.UnixMilli() / f.window.Milliseconds()
+	wkey := fmt.Sprintf("%s:%d", key, idx)
+	idelta := int64(delta)
+	_, err := f.rdb.IncrBy(ctx, wkey, idelta).Result()
+	if err != nil {
+		return err
+	}
 	return nil
+	// Reconcile derives its window key from time.Now() at reconcile-time, but the original debit happened at Allow-time, possibly in a different window.
 }
 
 // --- The "EXPIRE only on first increment" bug (why window-in-key avoids it) ---
