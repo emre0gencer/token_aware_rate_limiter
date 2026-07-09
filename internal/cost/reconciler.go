@@ -1,7 +1,5 @@
 package cost
 
-import "encoding/json"
-
 // Usage is the provider's reported actual token consumption.
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
@@ -25,17 +23,18 @@ type usageEnvelope struct {
 // Returns ok=false for streaming/SSE bodies where usage isn't a single JSON
 // object — the caller then skips reconciliation for that request.
 func UsageFromResponse(body []byte) (Usage, bool) {
-	var env usageEnvelope
-	if err := json.Unmarshal(body, &env); err != nil {
-		return Usage{}, false
-	}
-	if env.Usage.Total() == 0 {
-		return Usage{}, false
-	}
-	return env.Usage, true
+	// TODO (STEP 5):
+	// HINT 1 — json.Unmarshal(body, &env) where env is a usageEnvelope; on error
+	//          return (Usage{}, false).
+	// HINT 2 — if env.Usage.Total() == 0 there's nothing usable (a streaming
+	//          chunk, or no usage object) — return (Usage{}, false).
+	// HINT 3 — otherwise return (env.Usage, true).
+	// (Remember to re-add the "encoding/json" import.)
+	return Usage{}, false // TODO
 }
 
 // TokenDelta is actual minus estimate, the amount to settle on the bucket.
 func TokenDelta(est Estimate, actual Usage) float64 {
-	return float64(actual.Total() - est.Total())
+	// TODO: return float64(actual.Total() - est.Total()).
+	return 0 // TODO
 }

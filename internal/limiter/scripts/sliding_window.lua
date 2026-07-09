@@ -14,39 +14,20 @@ local cost   = tonumber(ARGV[3])
 local now    = tonumber(ARGV[4])
 local ttl    = tonumber(ARGV[5])
 
-local cur_start = math.floor(now / window) * window
+-- TODO: implement the weighted sliding window — the precise alternative to the
+-- step-3 fixed window (which allows a 2x burst across the boundary).
+--
+-- HINT 1 — locate the current window: cur_start = math.floor(now/window)*window.
+-- HINT 2 — read {cur, prev, start} via HMGET (default cur/prev = 0, start =
+--          cur_start). If start advanced exactly one window, prev = old cur; if
+--          it jumped further (a gap), prev = 0. Then cur = 0, start = cur_start.
+-- HINT 3 — weight the previous window by the fraction still inside the view:
+--          local weight   = (window - (now - cur_start)) / window
+--          local estimate = cur + prev * weight
+-- HINT 4 — admit iff estimate + cost <= limit; if so cur = cur + cost, allowed = 1.
+-- HINT 5 — persist HSET cur/prev/start, then PEXPIRE KEYS[1] ttl.
+-- HINT 6 — remaining = max(0, limit - used) where used includes cost when
+--          admitted; reset_ms = (cur_start + window) - now. Return
+--          { allowed, tostring(remaining), reset_ms }.
 
-local h = redis.call('HMGET', KEYS[1], 'cur', 'prev', 'start')
-local cur   = tonumber(h[1]) or 0
-local prev  = tonumber(h[2]) or 0
-local start = tonumber(h[3]) or cur_start
-
-if start ~= cur_start then
-  if (cur_start - start) == window then
-    prev = cur            -- we advanced exactly one window
-  else
-    prev = 0              -- gap: previous window is stale
-  end
-  cur = 0
-  start = cur_start
-end
-
--- weight the previous window by the fraction of it still inside the sliding view
-local elapsed_into = now - cur_start
-local weight = (window - elapsed_into) / window
-local estimate = cur + prev * weight
-
-local allowed = 0
-if (estimate + cost) <= limit then
-  cur = cur + cost
-  allowed = 1
-end
-
-redis.call('HSET', KEYS[1], 'cur', cur, 'prev', prev, 'start', start)
-redis.call('PEXPIRE', KEYS[1], ttl)
-
-local used = estimate
-if allowed == 1 then used = used + cost end
-local remaining = math.max(0, limit - used)
-local reset_ms = (cur_start + window) - now
-return { allowed, tostring(remaining), reset_ms }
+return { 0, "0", 0 } -- TODO

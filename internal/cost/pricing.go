@@ -13,21 +13,22 @@ type PriceTable struct {
 	Default Price            `yaml:"default"`
 }
 
+// priceFor returns the model's Price, falling back to Default when unknown.
 func (p PriceTable) priceFor(model string) Price {
-	if pr, ok := p.Models[model]; ok {
-		return pr
-	}
-	return p.Default
+	// TODO: return p.Models[model] when present, else p.Default.
+	return Price{} // TODO
 }
 
 // Dollars converts token counts to a dollar cost for the given model.
 func (p PriceTable) Dollars(model string, inputTokens, outputTokens int) float64 {
-	pr := p.priceFor(model)
-	return float64(inputTokens)/1000.0*pr.InputPer1K +
-		float64(outputTokens)/1000.0*pr.OutputPer1K
+	// TODO (STEP 5): pr := priceFor(model); return
+	//   float64(inputTokens)/1000.0*pr.InputPer1K +
+	//   float64(outputTokens)/1000.0*pr.OutputPer1K
+	return 0 // TODO
 }
 
 // EstimateDollars prices a pre-flight Estimate (treats MaxTokens as output).
 func (p PriceTable) EstimateDollars(e Estimate) float64 {
-	return p.Dollars(e.Model, e.PromptTokens, e.MaxTokens)
+	// TODO: return p.Dollars(e.Model, e.PromptTokens, e.MaxTokens).
+	return 0 // TODO
 }
