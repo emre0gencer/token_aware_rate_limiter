@@ -18,3 +18,4 @@ coverage.*
 # local docs (not committed)
 ARCHITECTURE.md
 decisions.md
+CLAUDE.md

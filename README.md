@@ -57,6 +57,8 @@ docs/DECISIONS.md      ADRs — the "why" for every choice
 
 ## Build order (incremental — build the next thing only once the last works)
 
+Full per-step instructions — goals, files, functions, verification — live in [`INSTRUCTIONS.md`](INSTRUCTIONS.md), the build guidebook.
+
 1. Bare reverse proxy → one upstream.
 2. In-memory weighted token bucket (single node).
 3. Redis sliding window (`INCRBY`+`EXPIRE`).

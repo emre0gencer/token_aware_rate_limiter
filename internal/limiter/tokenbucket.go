@@ -44,17 +44,11 @@ func NewTokenBucket(rdb redis.Cmdable, capacity, refillPerSec float64, ttl time.
 
 func (t *TokenBucket) Allow(ctx context.Context, key string, cost float64) (Decision, error) {
 	now := time.Now()
-	_ = now
 
 	// HINT 1 — run the script atomically. redis.Script.Run does EVALSHA (falling
 	// back to EVAL on NOSCRIPT), so the entire bucket update is one race-free
 	// round-trip. KEYS[1] is the bucket key; the ARGV order MUST match the header
 	// contract in scripts/token_bucket.lua exactly:
-	//     res, err := tokenBucketScript.Run(ctx, t.rdb,
-	//         []string{key},
-	//         t.capacity, t.refill, cost, now.UnixMilli(), t.ttl.Milliseconds(),
-	//     ).Result()
-
 	// HINT 2 — errors bubble up. On err return (Decision{}, err) and let the
 	// gateway apply the fail-open/closed policy (ADR-008); don't invent a
 	// decision here.
@@ -63,8 +57,22 @@ func (t *TokenBucket) Allow(ctx context.Context, key string, cost float64) (Deci
 	// reset_ms }. parseDecision (limiter.go) turns that array into a Decision and
 	// converts reset_ms into ResetAt relative to `now`:
 	//     return parseDecision(res, t.capacity, now)
+	res, err := tokenBucketScript.Run(
+		ctx,
+		t.rdb,
+		[]string{key},
+		t.capacity,
+		t.refill,
+		cost,
+		now.UnixMilli(),
+		t.ttl.Milliseconds(),
+	).Result()
 
-	return Decision{}, nil // TODO: implement via tokenBucketScript.Run + parseDecision
+	if err != nil {
+		return Decision{}, err
+	}
+
+	return parseDecision(res, t.capacity, now)
 }
 
 // Reconcile settles the optimistic pre-flight debit: delta = actual - estimate.
@@ -74,5 +82,12 @@ func (t *TokenBucket) Reconcile(ctx context.Context, key string, delta float64) 
 	// more, delta < 0 refunds; the script clamps to [0, capacity]. Return .Err().
 	//     return tokenBucketReconcile.Run(ctx, t.rdb,
 	//         []string{key}, t.capacity, delta, t.ttl.Milliseconds()).Err()
-	return nil // TODO
+	return tokenBucketReconcile.Run(
+		ctx,
+		t.rdb,
+		[]string{key},
+		t.capacity,
+		delta,
+		t.ttl.Milliseconds(),
+	).Err()
 }
