@@ -1,56 +1,78 @@
 // Command gateway is the entry point for the rate-limiting LLM proxy.
 //
-// STEP 1 of the build order (README §"Build order"): a *bare* reverse proxy.
-// It forwards every request to one upstream and streams the response back —
-// no identification, no limiting, no cost accounting yet. We get something
-// that runs and is testable first, then layer the (already-built) limiter on
-// top in later steps.
+// STEP 5 of the build order: the bare step-1 reverse proxy is replaced by the
+// full middleware chain. main.go's job is now pure wiring — load config,
+// connect to Redis, build one limiter per rule, and hand everything to
+// gateway.New (which owns identify → estimate → limit → proxy → reconcile →
+// observe). All the interesting logic lives in the internal packages; this file
+// just assembles them.
 package main
 
 import (
 	"flag"
 	"log"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
+
+	"github.com/egencer/distributed-rate-limiter-gateway/internal/config"
+	"github.com/egencer/distributed-rate-limiter-gateway/internal/gateway"
+	"github.com/egencer/distributed-rate-limiter-gateway/internal/limiter"
+	"github.com/egencer/distributed-rate-limiter-gateway/internal/metrics"
+	"github.com/egencer/distributed-rate-limiter-gateway/internal/rules"
+	"github.com/egencer/distributed-rate-limiter-gateway/internal/store"
 )
 
 func main() {
-	// Later we'll replace these with the internal/config loader that already
-	// exists — for a "bare" step, two flags keep it honest and dependency-free.
-	addr := flag.String("addr", ":8080", "address the gateway listens on")
-	upstream := flag.String("upstream", "", "upstream LLM base URL, e.g. https://api.openai.com")
+	configPath := flag.String("config", "config.yaml", "path to the YAML config file")
 	flag.Parse()
 
-	if *upstream == "" {
-		//prints and exits with a non-zero status.
-		log.Fatal("missing required -upstream flag")
-	}
-
-	// url.Parse validates the target and splits it into scheme/host/path.
-	target, err := url.Parse(*upstream)
+	// Config carries server/redis/upstream settings, the price table, and the
+	// rule set. Load validates it (upstream.base_url is required) and fills in
+	// defaults for anything omitted.
+	cfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Fatalf("bad -upstream URL %q: %v", *upstream, err)
+		log.Fatalf("config: %v", err)
 	}
 
-	// NewSingleHostReverseProxy is the whole reverse proxy in one call: it
-	// rewrites each incoming request onto `target` and streams the upstream
-	// response back to the client unbuffered — which is exactly what we want
-	// for token-by-token LLM responses.
-	proxy := httputil.NewSingleHostReverseProxy(target)
-
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("%s %s -> %s", r.Method, r.URL.Path, target.Host)
-		proxy.ServeHTTP(w, r)
-	})
-
-	// Make the upstream see its own host in the Host header, not the client's.
-	orig := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		orig(req) // does the scheme/host/path rewrite
-		req.Host = target.Host
+	// One shared Redis client is the single budget truth for every stateless
+	// replica. Per-op timeouts come from config so a slow shard trips the same
+	// degradation path as a down one (ADR-008).
+	rdb, err := store.NewRedis(cfg.Redis.Addr, cfg.Redis.Timeout)
+	if err != nil {
+		log.Fatalf("redis %s: %v", cfg.Redis.Addr, err)
 	}
 
-	log.Printf("gateway listening on %s, proxying to %s", *addr, target)
-	log.Fatal(http.ListenAndServe(*addr, handler))
+	// Build one Limiter per rule ID, switching on the algorithm the rule asks
+	// for. gateway.New requires exactly one limiter per rule, so an unknown
+	// algorithm is a config error we fail fast on rather than silently skip.
+	limiters := make(map[string]limiter.Limiter, len(cfg.Rules))
+	for _, r := range cfg.Rules {
+		switch r.Algorithm {
+		case rules.AlgoTokenBucket:
+			// ttl 0 → NewTokenBucket defaults to 1h; idle buckets auto-expire.
+			limiters[r.ID] = limiter.NewTokenBucket(rdb, r.Capacity(), r.RefillPerSec(), 0)
+		case rules.AlgoSlidingWindow:
+			// ttl 0 → NewSlidingWindow defaults to 2×window.
+			limiters[r.ID] = limiter.NewSlidingWindow(rdb, r.Limit, r.Window, 0)
+		default:
+			log.Fatalf("rule %q: unknown algorithm %q", r.ID, r.Algorithm)
+		}
+	}
+
+	// The engine matches each request to its applicable rules in memory; only
+	// the counters those rules debit live in Redis (ADR-011).
+	engine := rules.NewEngine(cfg.Rules)
+
+	gw, err := gateway.New(engine, limiters, cfg.Pricing, cfg.Upstream.BaseURL, cfg.Upstream.DefaultMaxTokens)
+	if err != nil {
+		log.Fatalf("gateway: %v", err)
+	}
+
+	// The gateway handles everything at /; metrics ride alongside at /debug/vars.
+	mux := http.NewServeMux()
+	mux.Handle("/debug/vars", metrics.Handler())
+	mux.Handle("/", gw)
+
+	log.Printf("gateway listening on %s, proxying to %s (%d rules)",
+		cfg.Server.Addr, cfg.Upstream.BaseURL, len(cfg.Rules))
+	log.Fatal(http.ListenAndServe(cfg.Server.Addr, mux))
 }

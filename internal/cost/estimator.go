@@ -7,6 +7,11 @@
 // already asserts the behavior (it will stay red until this is implemented).
 package cost
 
+import (
+	"encoding/json"
+	"unicode/utf8"
+)
+
 // Estimate is the pre-flight worst-case token cost of a request, used as the
 // optimistic debit before we proxy. We intentionally over-estimate (prompt +
 // max_tokens) so we never under-protect under concurrency; reconciliation
@@ -47,11 +52,32 @@ func EstimateFromBody(body []byte, defaultMaxTokens int) Estimate {
 	//          it. Return Estimate{Model: req.Model, PromptTokens:
 	//          approxTokens(chars), MaxTokens: maxTok}.
 	// (Remember to re-add the "encoding/json" and "unicode/utf8" imports.)
-	return Estimate{} // TODO
+	var req chatRequest
+	_ = json.Unmarshal(body, &req)
+	chars := 0
+	for _, msg := range req.Messages {
+		chars += utf8.RuneCountInString(msg.Content)
+	}
+
+	chars += utf8.RuneCountInString(req.Prompt)
+
+	if chars == 0 {
+		chars = utf8.RuneCount(body)
+	}
+
+	maxTok := req.MaxTokens
+	if maxTok == 0 {
+		maxTok = defaultMaxTokens
+	}
+
+	return Estimate{
+		Model:        req.Model,
+		PromptTokens: approxTokens(chars),
+		MaxTokens:    maxTok,
+	}
 }
 
 // approxTokens converts characters to tokens (~4 chars/token, min 1).
 func approxTokens(chars int) int {
-	// TODO: return max(1, chars/4).
-	return 0 // TODO
+	return max(1, chars/4)
 }

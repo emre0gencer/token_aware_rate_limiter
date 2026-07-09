@@ -34,7 +34,6 @@ func NewSlidingWindow(rdb redis.Cmdable, limit float64, window, ttl time.Duratio
 
 func (s *SlidingWindow) Allow(ctx context.Context, key string, cost float64) (Decision, error) {
 	now := time.Now()
-	_ = now
 
 	// HINT 1 — one atomic round-trip, same shape as TokenBucket.Allow. The ARGV
 	// order MUST match the header in scripts/sliding_window.lua:
@@ -46,7 +45,14 @@ func (s *SlidingWindow) Allow(ctx context.Context, key string, cost float64) (De
 	// HINT 3 — parse { allowed, remaining, reset_ms } with the shared helper:
 	//     return parseDecision(res, s.limit, now)
 
-	return Decision{}, nil // TODO
+	res, err := slidingWindowScript.Run(ctx, s.rdb,
+		[]string{key},
+		s.limit, s.window.Milliseconds(), cost, now.UnixMilli(), s.ttl.Milliseconds(),
+	).Result()
+	if err != nil {
+		return Decision{}, err
+	}
+	return parseDecision(res, s.limit, now)
 }
 
 // Reconcile nudges the current-window counter by delta. Windows are coarser than
@@ -56,5 +62,8 @@ func (s *SlidingWindow) Reconcile(ctx context.Context, key string, delta float64
 	// delta. HINCRBYFLOAT can drive it negative on a large refund; keep it simple
 	// here (exactness lives in TokenBucket):
 	//     return s.rdb.HIncrByFloat(ctx, key, "cur", delta).Err()
-	return nil // TODO
+	if delta == 0 {
+		return nil
+	}
+	return s.rdb.HIncrByFloat(ctx, key, "cur", delta).Err()
 }

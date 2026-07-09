@@ -70,7 +70,7 @@ make run      # go run ./cmd/gateway -config config.yaml
 | 2 | In-memory weighted token bucket | ✅ done |
 | 3 | Redis fixed window (INCRBY+EXPIRE) | ✅ done |
 | 4 | Lua token bucket (atomic read-refill-debit) | ✅ done |
-| 5 | Cost estimator + reconcile, then full gateway wiring | ⬜ not started |
+| 5 | Cost estimator + reconcile, then full gateway wiring | ✅ done |
 | 6 | Multi-node invariant test | ⬜ not started |
 | 7 | Dollar rules + most-restrictive multi-rule eval | ⬜ not started |
 | 8 | Degradation: fail-closed, timeouts, in-memory fallback | ⬜ not started |
