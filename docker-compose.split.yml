@@ -1,0 +1,21 @@
+# Negative control for the step-6 invariant (overlay on docker-compose.yml):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.split.yml up --build -d
+#   ./scripts/invariant.sh
+#
+# gateway2 is repointed at its OWN Redis (redis2), so the two replicas NO LONGER
+# share budget state. Each keeps a private 10k bucket for the same client key, so
+# a flood split across both admits ≈ 2× the configured budget. That doubling is
+# the failure this whole project exists to prevent — proving the invariant needs
+# truly shared state, not just "a Redis per node".
+services:
+  redis2:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no"]
+
+  gateway2:
+    environment:
+      - REDIS_ADDR=redis2:6379
+    depends_on:
+      - redis2
+      - stubllm

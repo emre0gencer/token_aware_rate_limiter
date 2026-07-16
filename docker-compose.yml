@@ -1,6 +1,13 @@
-# Local stack for the multi-node invariant test: one Redis (shared state) and
-# two stateless gateway replicas behind whatever LB you put in front (or just
-# hit them round-robin). Both replicas share Redis => the global budget holds.
+# Local stack for the STEP-6 multi-node invariant test: one Redis (the single
+# shared budget), a zero-cost fake LLM upstream (stubllm), and two stateless
+# gateway replicas. Both replicas share Redis => the global budget holds no
+# matter how the flood spreads across them. Drive it with scripts/invariant.sh.
+#
+#   docker compose up --build -d
+#   ./scripts/invariant.sh
+#
+# For the negative control (each replica its own Redis => spend doubles), add the
+# override file:  docker compose -f docker-compose.yml -f docker-compose.split.yml up --build -d
 services:
   redis:
     image: redis:7-alpine
@@ -8,26 +15,40 @@ services:
     ports:
       - "6379:6379"
 
+  # Fake LLM upstream. -echo-max-tokens makes reported usage equal the gateway's
+  # estimate (reconcile delta = 0) so admission is deterministic under load.
+  stubllm:
+    build:
+      context: .
+      dockerfile: Dockerfile.stub
+    # Flags only — the image ENTRYPOINT already runs /stubllm. Repeating the
+    # binary here would make Go's flag.Parse stop at the first non-flag arg.
+    command: ["-addr", ":9090", "-echo-max-tokens"]
+    expose:
+      - "9090"
+
   gateway1:
     build: .
-    command: ["/gateway", "-config", "/config.yaml"]
+    command: ["-config", "/config.yaml"]
     volumes:
-      - ./config.yaml:/config.yaml:ro
+      - ./config.invariant.yaml:/config.yaml:ro
     environment:
       - REDIS_ADDR=redis:6379
     ports:
       - "8081:8080"
     depends_on:
       - redis
+      - stubllm
 
   gateway2:
     build: .
-    command: ["/gateway", "-config", "/config.yaml"]
+    command: ["-config", "/config.yaml"]
     volumes:
-      - ./config.yaml:/config.yaml:ro
+      - ./config.invariant.yaml:/config.yaml:ro
     environment:
       - REDIS_ADDR=redis:6379
     ports:
       - "8082:8080"
     depends_on:
       - redis
+      - stubllm

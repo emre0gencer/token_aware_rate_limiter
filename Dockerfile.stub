@@ -1,0 +1,14 @@
+# The zero-cost fake LLM upstream (cmd/stubllm), built the same way as the
+# gateway: static binary on a distroless base. Used by the step-6 invariant
+# stack so the flood never touches a real (paid) provider.
+FROM golang:1.22-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum* ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /stubllm ./cmd/stubllm
+
+FROM gcr.io/distroless/static-debian12
+COPY --from=build /stubllm /stubllm
+EXPOSE 9090
+ENTRYPOINT ["/stubllm"]

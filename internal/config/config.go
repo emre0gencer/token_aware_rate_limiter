@@ -25,13 +25,13 @@ type Server struct {
 }
 
 type Redis struct {
-	Addr      string
-	Timeout   time.Duration // per-op deadline
+	Addr    string
+	Timeout time.Duration // per-op deadline
 }
 
 type Upstream struct {
-	BaseURL         string // LLM provider base, e.g. https://api.openai.com
-	DefaultMaxTokens int   // fallback completion bound when request omits max_tokens
+	BaseURL          string // LLM provider base, e.g. https://api.openai.com
+	DefaultMaxTokens int    // fallback completion bound when request omits max_tokens
 }
 
 // raw mirrors the YAML shape, with string durations, before conversion.
@@ -79,6 +79,15 @@ func Load(path string) (*Config, error) {
 		Redis:    Redis{Addr: orDefault(r.Redis.Addr, "localhost:6379"), Timeout: msOrDefault(r.Redis.TimeoutMS, 50)},
 		Upstream: Upstream{BaseURL: r.Upstream.BaseURL, DefaultMaxTokens: intOrDefault(r.Upstream.DefaultMaxTokens, 512)},
 		Pricing:  r.Pricing,
+	}
+
+	// Env override: REDIS_ADDR wins over the file value so one config.yaml serves
+	// both a local run (localhost:6379) and the compose replicas (redis:6379),
+	// which is exactly what the step-6 multi-node invariant needs — every replica
+	// shares the same Redis without editing the mounted config. (ADR-011: rules
+	// are config, counters are Redis; only the address is environment.)
+	if v := os.Getenv("REDIS_ADDR"); v != "" {
+		cfg.Redis.Addr = v
 	}
 
 	for _, rr := range r.Rules {

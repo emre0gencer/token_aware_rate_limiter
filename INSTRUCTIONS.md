@@ -71,7 +71,7 @@ make run      # go run ./cmd/gateway -config config.yaml
 | 3 | Redis fixed window (INCRBY+EXPIRE) | ✅ done |
 | 4 | Lua token bucket (atomic read-refill-debit) | ✅ done |
 | 5 | Cost estimator + reconcile, then full gateway wiring | ✅ done |
-| 6 | Multi-node invariant test | ⬜ not started |
+| 6 | Multi-node invariant test | ✅ done |
 | 7 | Dollar rules + most-restrictive multi-rule eval | ⬜ not started |
 | 8 | Degradation: fail-closed, timeouts, in-memory fallback | ⬜ not started |
 | 9 | Redis Cluster sharding + dynamic rule reload | ⬜ not started |
@@ -296,7 +296,20 @@ proxied, reconciled, and metered end-to-end.
 
 ---
 
-## Step 6 — Multi-node invariant test ⬜
+## Step 6 — Multi-node invariant test ✅
+
+**How it was built (result):** `cmd/stubllm` (zero-cost fake upstream, gains an
+`-echo-max-tokens` flag so actual usage == estimate ⇒ reconcile delta 0, keeping
+admission deterministic); `config.go` honors `REDIS_ADDR`; `config.invariant.yaml`
+is a minimal one-rule 10k-token fixture; `docker-compose.yml` adds `stubllm` +
+mounts the fixture; `docker-compose.split.yml` is the separate-Redis negative
+control; `scripts/invariant.sh` floods `:8081`/`:8082` round-robin and asserts
+admitted spend ≈ budget. Measured (`make invariant` / `make invariant-split`):
+**shared Redis → 20 admitted, 10,000 tokens, 1.00× (PASS)**; **split Redis → 40
+admitted, 20,000 tokens, 2.00× (FAIL — spend doubles).** Numbers recorded in the
+README. (Note: `cmd/gateway` and `cmd/stubllm` container `command:`s were fixed
+to pass flags only — the Dockerfile `ENTRYPOINT` already supplies the binary, so
+repeating it made `flag.Parse` stop before the flags.)
 
 **Goal / the "why":** the defining test of the whole project (ARCHITECTURE.md
 §9, README "The invariant"). N stateless replicas + one Redis must enforce ONE

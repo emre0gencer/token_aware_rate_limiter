@@ -46,8 +46,9 @@ type usage struct {
 // request is the subset we read back to derive a realistic prompt-token count
 // and to echo the caller's model.
 type request struct {
-	Model    string `json:"model"`
-	Messages []struct {
+	Model     string `json:"model"`
+	MaxTokens int    `json:"max_tokens"`
+	Messages  []struct {
 		Content string `json:"content"`
 	} `json:"messages"`
 	Prompt string `json:"prompt"`
@@ -56,6 +57,10 @@ type request struct {
 func main() {
 	addr := flag.String("addr", ":9090", "listen address")
 	completion := flag.Int("completion-tokens", 25, "fixed completion tokens reported per response")
+	echoMax := flag.Bool("echo-max-tokens", false,
+		"report completion_tokens = request max_tokens (falls back to -completion-tokens); "+
+			"makes actual usage equal the gateway's estimate so reconcile is a no-op — "+
+			"used by the step-6 invariant test to keep admission deterministic")
 	latency := flag.Duration("latency", 0, "artificial per-request latency, e.g. 20ms")
 	flag.Parse()
 
@@ -90,6 +95,15 @@ func main() {
 		if model == "" {
 			model = "stub-model"
 		}
+		// Completion tokens: fixed by default, or echo the request's max_tokens so
+		// actual == the gateway's worst-case estimate (prompt + max_tokens) and the
+		// reconcile delta is zero. The invariant test wants delta=0 so admissions
+		// are governed purely by the optimistic debit, with no async refund racing
+		// the flood.
+		completionTokens := *completion
+		if *echoMax && req.MaxTokens > 0 {
+			completionTokens = req.MaxTokens
+		}
 		resp := response{
 			ID:     "stub-" + strconv.FormatInt(time.Now().UnixNano(), 36),
 			Object: "chat.completion",
@@ -100,14 +114,15 @@ func main() {
 			}},
 			Usage: usage{
 				PromptTokens:     prompt,
-				CompletionTokens: *completion,
-				TotalTokens:      prompt + *completion,
+				CompletionTokens: completionTokens,
+				TotalTokens:      prompt + completionTokens,
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 
-	log.Printf("stubllm listening on %s (completion_tokens=%d, latency=%s)", *addr, *completion, *latency)
+	log.Printf("stubllm listening on %s (completion_tokens=%d, echo_max_tokens=%t, latency=%s)",
+		*addr, *completion, *echoMax, *latency)
 	log.Fatal(http.ListenAndServe(*addr, nil))
 }

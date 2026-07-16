@@ -72,7 +72,26 @@ Full per-step instructions — goals, files, functions, verification — live in
 
 ## The invariant that proves it works
 
-Spin up N replicas, set a 100k-tokens/min budget for one key, flood the cluster through the LB, and verify total admitted tokens ≈ the budget **regardless of how requests spread across nodes**, and that post-reconcile spend matches the providers' reported `usage`. If admitted spend scales with replica count, the state isn't truly shared — the design has failed.
+Spin up N replicas, set a token budget for one key, flood the cluster through the LB, and verify total admitted tokens ≈ the budget **regardless of how requests spread across nodes**, and that post-reconcile spend matches the providers' reported `usage`. If admitted spend scales with replica count, the state isn't truly shared — the design has failed.
+
+The step-6 harness proves it end-to-end: `redis` + a zero-cost fake upstream (`cmd/stubllm`) + two stateless gateway replicas (`:8081`, `:8082`), driven by `scripts/invariant.sh`, which floods both nodes round-robin with requests of a known 500-token estimate against a **10,000-token/min** budget.
+
+```bash
+make compose         # redis + stubllm + gateway1(:8081) + gateway2(:8082)
+make invariant       # flood both nodes; assert admitted spend ≈ budget
+
+make invariant-split # negative control: gateway2 on its OWN redis
+make compose-down    # tear everything down
+```
+
+**Measured** (120 requests, 500 tokens each, budget 10,000):
+
+| Topology | Admitted | Admitted tokens | Ratio to budget | Verdict |
+|---|---|---|---|---|
+| **Shared Redis** (both replicas → one Redis) | 20 (10 + 10 across nodes) | 10,000 | **1.00×** | ✅ budget holds globally |
+| **Split Redis** (each replica → its own Redis) | 40 (20 + 20 across nodes) | 20,000 | **2.00×** | ❌ spend doubles — state not shared |
+
+The 2.00× is the failure mode the shared-state design exists to prevent: with per-node Redis, each replica enforces its own private budget, so admitted spend scales with replica count. The invariant is isolated from reconcile timing by running the stub with `-echo-max-tokens` (actual usage == estimate ⇒ settlement delta = 0), so admission is governed purely by the atomic optimistic debit.
 
 ## Dev
 

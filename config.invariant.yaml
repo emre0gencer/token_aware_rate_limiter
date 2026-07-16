@@ -1,0 +1,40 @@
+# Fixture config for the STEP-6 multi-node invariant test (scripts/invariant.sh).
+#
+# Deliberately minimal: ONE small per-API-key token budget so the assertion is
+# unambiguous — "total admitted estimated tokens ≈ this budget, regardless of how
+# the flood spreads across replicas." No dollar/global/ip rules to muddy which
+# rule binds. Mounted into both gateway replicas by docker-compose.yml.
+#
+# redis.addr here is the local default; in compose the REDIS_ADDR env var
+# overrides it to redis:6379 so both replicas share ONE Redis (that shared state
+# is the whole point). upstream.base_url points at the stubllm service, which is
+# run with -echo-max-tokens so actual usage == estimate (reconcile delta = 0),
+# keeping admission governed purely by the optimistic debit.
+server:
+  addr: ":8080"
+
+redis:
+  addr: "localhost:6379"   # overridden by REDIS_ADDR=redis:6379 in compose
+  timeout_ms: 50
+
+upstream:
+  base_url: "http://stubllm:9090"   # compose service; free, in-network
+  default_max_tokens: 512
+
+pricing:
+  default:
+    input_per_1k: 0.5
+    output_per_1k: 1.5
+
+rules:
+  # The single budget under test. burst == limit => bucket capacity is exactly
+  # the budget (starts full). window 60s => sustained refill 10000/60 ≈ 167 tok/s,
+  # negligible next to a sub-second flood, so admitted spend ≈ the 10k capacity.
+  - id: key-tokens-per-min
+    scope: api_key
+    algorithm: token_bucket
+    unit: tokens
+    limit: 10000
+    burst: 10000
+    window: 60s
+    fail_open: false        # cost gateway => fail-closed (ADR-008)
